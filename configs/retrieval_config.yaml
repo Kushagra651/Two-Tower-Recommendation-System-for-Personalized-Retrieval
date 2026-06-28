@@ -1,0 +1,4 @@
+index_type: flat   # "flat" (exact, recommended for ml-1m/ml-25m scale) or "ivf" (approximate, for much larger catalogs)
+nlist: 100          # number of clusters, only used when index_type == "ivf"
+nprobe: 10          # clusters searched per query, only used when index_type == "ivf"
+top_k: 10           # default number of recommendations returned by search.py / serving

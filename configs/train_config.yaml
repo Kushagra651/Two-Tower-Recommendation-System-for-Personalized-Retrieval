@@ -1,0 +1,26 @@
+data:
+  processed_dir: data/processed
+  train_file: train.csv
+  val_file: val.csv
+  test_file: test.csv
+  id_maps_file: id_maps.json
+  num_eval_negatives: 99
+
+model:
+  embedding_dim: 64
+  hidden_dims: [128, 64]
+  dropout: 0.1
+
+train:
+  batch_size: 512
+  epochs: 15
+  lr: 0.001
+  weight_decay: 0.00001
+  temperature: 0.1
+  eval_every: 1
+  top_k: 10
+  seed: 42
+  device: cpu
+  checkpoint_dir: checkpoints
+  results_dir: results
+  log_dir: results/logs
