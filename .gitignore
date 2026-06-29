@@ -1,2 +1,4 @@
 /recsysenv
 data/processed/
+__pycache__/ 
+*.pyc
