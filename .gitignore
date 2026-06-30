@@ -1,2 +1,41 @@
-/recsysenv
-data/processed/
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+
+# Virtual environment
+recsysenv/
+
+# Data — keep folder structure, ignore actual dumps
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/README.md
+data/processed/*
+!data/processed/.gitkeep
+
+# Model artifacts — regenerate via train.py / build_index.py, don't commit binaries
+checkpoints/
+embeddings/
+
+# Experiment tracking
+mlruns/
+
+# Logs / generated results (keep the folder, not the run output)
+results/logs/
+results/*.json
+results/*.csv
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Environment
+.env
+.venv/
+venv/
+*.log
+
+# OS
+.DS_Store
