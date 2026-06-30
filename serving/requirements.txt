@@ -1,0 +1,10 @@
+# Minimal dependencies for the FastAPI inference container — deliberately
+# excludes training-only packages (pandas, jupyter, streamlit, mlflow) to
+# keep the Docker image small.
+torch==2.3.0
+fastapi==0.111.0
+uvicorn==0.29.0
+pydantic==2.7.1
+faiss-cpu==1.8.0
+pyyaml==6.0.1
+numpy==1.26.4
