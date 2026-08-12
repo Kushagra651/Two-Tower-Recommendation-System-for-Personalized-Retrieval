@@ -7,17 +7,18 @@ Run locally:
     uvicorn serving.app:app --reload --port 8000
 
 Endpoints:
-    GET  /health            -> liveness + whether the model loaded
+    GET  /health            -> liveness + whether the model/titles loaded
     POST /recommend         -> {"user_id": 1, "top_k": 10} -> top-K movie recommendations
 """
+
 import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # avoid OpenMP DLL clash (torch + faiss on Windows)
 
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from contextlib import asynccontextmanager
 
 import torch
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from serving.model_loader import ModelBundle, load_bundle
 from serving.schemas import HealthResponse, RecommendationItem, RecommendRequest, RecommendResponse
@@ -35,10 +36,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Two-Tower Recommender API", version="1.0.0", lifespan=lifespan)
 
+# allow the Streamlit demo (different port) to call this API from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    return HealthResponse(status="ok", model_loaded=bundle is not None)
+    return HealthResponse(
+        status="ok",
+        model_loaded=bundle is not None,
+        titles_loaded=bool(bundle and bundle.movie_titles),
+    )
 
 
 @app.post("/recommend", response_model=RecommendResponse)
@@ -57,7 +70,12 @@ def recommend(req: RecommendRequest):
     scores, indices = bundle.index.search(user_emb, req.top_k)
 
     recommendations = [
-        RecommendationItem(movie_id=bundle.idx2item[int(i)], score=float(s))
+        RecommendationItem(
+            movie_id=bundle.idx2item[int(i)],
+            title=bundle.movie_titles.get(bundle.idx2item[int(i)]),
+            genres=bundle.movie_genres.get(bundle.idx2item[int(i)]),
+            score=float(s),
+        )
         for i, s in zip(indices[0], scores[0])
     ]
 

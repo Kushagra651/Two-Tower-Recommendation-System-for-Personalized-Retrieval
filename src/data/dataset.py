@@ -11,7 +11,7 @@ src/data/dataset.py
   paper, so Recall@10/NDCG@10 are directly comparable to published numbers.
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import torch
@@ -21,27 +21,51 @@ from src.data.preprocess import NegativeSampler
 
 
 class TwoTowerDataset(Dataset):
-    """Wraps a positives-only interactions dataframe (train.csv)."""
+    """
+    Wraps a positives-only interactions dataframe (train.csv).
 
-    def __init__(self, df: pd.DataFrame):
+    If user_features and item_features tensors are provided, each batch
+    yields (user_idx, item_idx, user_feat, item_feat).
+    Otherwise yields (user_idx, item_idx) — backward compatible.
+    """
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        user_features: Optional[torch.Tensor] = None,
+        item_features: Optional[torch.Tensor] = None,
+    ):
         self.user_idx = torch.tensor(df["user_idx"].values, dtype=torch.long)
         self.item_idx = torch.tensor(df["item_idx"].values, dtype=torch.long)
+        self.user_features = user_features  # (num_users, user_feat_dim) or None
+        self.item_features = item_features  # (num_items, item_feat_dim) or None
 
     def __len__(self):
         return len(self.user_idx)
 
     def __getitem__(self, idx):
-        return self.user_idx[idx], self.item_idx[idx]
+        u = self.user_idx[idx]
+        i = self.item_idx[idx]
+        if self.user_features is not None and self.item_features is not None:
+            return u, i, self.user_features[u], self.item_features[i]
+        return u, i
 
 
-def get_dataloader(df: pd.DataFrame, batch_size: int, shuffle: bool = True, num_workers: int = 0) -> DataLoader:
-    dataset = TwoTowerDataset(df)
+def get_dataloader(
+    df: pd.DataFrame,
+    batch_size: int,
+    shuffle: bool = True,
+    num_workers: int = 0,
+    user_features: Optional[torch.Tensor] = None,
+    item_features: Optional[torch.Tensor] = None,
+) -> DataLoader:
+    dataset = TwoTowerDataset(df, user_features=user_features, item_features=item_features)
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        drop_last=shuffle,  # drop last partial batch only during training (keeps in-batch negatives meaningful)
+        drop_last=shuffle,
     )
 
 

@@ -1,18 +1,17 @@
 """
 src/models/baseline_mf.py
-----------------------------
-Simple Matrix Factorization baseline — user embedding + item embedding +
-bias terms, scored by dot product. This is the "before deep learning" point
-of comparison referenced in notebooks/02_baseline_mf.ipynb and your README's
-metrics table.
+--------------------------
+BPR Matrix Factorization baseline.
 
-Train it with bpr_loss() from losses.py + NegativeSampler from preprocess.py
-(it needs explicit (user, pos_item, neg_item) triples, unlike the two-tower
-model which uses in-batch negatives).
+Implements the same .score() interface as TwoTowerModel so it can be dropped
+directly into evaluate_model() from src/evaluate.py without any changes.
+
+    score(user_idx, item_idx) -> dot product of user & item embeddings
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class MatrixFactorization(nn.Module):
@@ -20,22 +19,27 @@ class MatrixFactorization(nn.Module):
         super().__init__()
         self.user_embedding = nn.Embedding(num_users, embedding_dim)
         self.item_embedding = nn.Embedding(num_items, embedding_dim)
-        self.user_bias = nn.Embedding(num_users, 1)
-        self.item_bias = nn.Embedding(num_items, 1)
-        self.global_bias = nn.Parameter(torch.zeros(1))
 
         nn.init.normal_(self.user_embedding.weight, std=0.01)
         nn.init.normal_(self.item_embedding.weight, std=0.01)
-        nn.init.zeros_(self.user_bias.weight)
-        nn.init.zeros_(self.item_bias.weight)
 
-    def forward(self, user_idx: torch.Tensor, item_idx: torch.Tensor) -> torch.Tensor:
-        u = self.user_embedding(user_idx)
-        i = self.item_embedding(item_idx)
-        dot = (u * i).sum(dim=-1)
-        bias = (
-            self.user_bias(user_idx).squeeze(-1)
-            + self.item_bias(item_idx).squeeze(-1)
-            + self.global_bias
-        )
-        return dot + bias
+    def forward(self, user_idx: torch.Tensor, pos_item_idx: torch.Tensor, neg_item_idx: torch.Tensor):
+        """Returns BPR loss for a batch of (user, pos_item, neg_item) triples."""
+        user_emb = self.user_embedding(user_idx)       # (B, D)
+        pos_emb  = self.item_embedding(pos_item_idx)   # (B, D)
+        neg_emb  = self.item_embedding(neg_item_idx)   # (B, D)
+
+        pos_score = (user_emb * pos_emb).sum(dim=-1)   # (B,)
+        neg_score = (user_emb * neg_emb).sum(dim=-1)   # (B,)
+
+        loss = -F.logsigmoid(pos_score - neg_score).mean()
+        return loss
+
+    def score(self, user_idx: torch.Tensor, item_idx: torch.Tensor) -> torch.Tensor:
+        """
+        Pointwise score — same interface as TwoTowerModel.score().
+        Called by evaluate_model() in src/evaluate.py with no changes needed.
+        """
+        user_emb = self.user_embedding(user_idx)
+        item_emb = self.item_embedding(item_idx)
+        return (user_emb * item_emb).sum(dim=-1)

@@ -13,7 +13,7 @@ model:
 
 train:
   batch_size: 512
-  epochs: 15
+  epochs: 50
   lr: 0.001
   weight_decay: 0.00001
   temperature: 0.1
