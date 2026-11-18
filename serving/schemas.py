@@ -10,8 +10,11 @@ from pydantic import BaseModel, Field
 
 
 class RecommendRequest(BaseModel):
-    user_id: int = Field(..., description="Raw UserID as it appears in users.dat / ratings.dat (NOT the internal user_idx)")
-    top_k: int = Field(10, ge=1, le=100, description="Number of recommendations to return")
+    user_id: Optional[int] = Field(None, description="Raw UserID. Omit for unknown user.")
+    gender: Optional[str] = Field(None, description="'M' or 'F'. Required if user_id unknown.")
+    age: Optional[int] = Field(None, description="Age bucket: 1 18 25 35 45 50 56.")
+    occupation: Optional[int] = Field(None, description="0-20. Required if user_id unknown.")
+    top_k: int = Field(10, ge=1, le=100)
 
 
 class RecommendationItem(BaseModel):
@@ -22,7 +25,7 @@ class RecommendationItem(BaseModel):
 
 
 class RecommendResponse(BaseModel):
-    user_id: int
+    user_id: Optional[int]
     recommendations: List[RecommendationItem]
 
 

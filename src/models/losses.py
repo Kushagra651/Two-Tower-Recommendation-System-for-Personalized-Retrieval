@@ -14,19 +14,13 @@ import torch
 import torch.nn.functional as F
 
 
-def in_batch_contrastive_loss(user_emb: torch.Tensor, item_emb: torch.Tensor, temperature: float = 0.1) -> torch.Tensor:
-    """
-    user_emb, item_emb: (batch_size, embedding_dim), L2-normalized.
-    Row i of user_emb and row i of item_emb form the positive pair; every
-    other row j != i is treated as a negative for user i (in-batch negatives).
-
-    Symmetric loss (user->item and item->user) is more stable than one-directional.
-    """
+def in_batch_contrastive_loss(user_emb, item_emb, temperature=0.1, log_q=None):
+    """log_q: (B,) log sampling prob of each batch item. Corrects u->i logits only."""
     batch_size = user_emb.size(0)
-    logits = (user_emb @ item_emb.T) / temperature          # (batch_size, batch_size)
-    labels = torch.arange(batch_size, device=logits.device)  # diagonal = positives
-
-    loss_u2i = F.cross_entropy(logits, labels)
+    logits = (user_emb @ item_emb.T) / temperature
+    labels = torch.arange(batch_size, device=logits.device)
+    u2i = logits - log_q[None, :] if log_q is not None else logits
+    loss_u2i = F.cross_entropy(u2i, labels)
     loss_i2u = F.cross_entropy(logits.T, labels)
     return (loss_u2i + loss_i2u) / 2.0
 

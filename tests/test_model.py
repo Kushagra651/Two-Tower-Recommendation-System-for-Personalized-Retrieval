@@ -61,7 +61,7 @@ class TestMatrixFactorization:
         mf = MatrixFactorization(num_users=20, num_items=30, embedding_dim=8)
         user_idx = torch.randint(0, 20, (8,))
         item_idx = torch.randint(0, 30, (8,))
-        scores = mf(user_idx, item_idx)
+        scores = mf.score(user_idx, item_idx)
         assert scores.shape == (8,)
 
 

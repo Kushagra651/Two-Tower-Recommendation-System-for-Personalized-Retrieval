@@ -39,3 +39,6 @@ venv/
 
 # OS
 .DS_Store
+defense_sheet.md
+__pycache__/
+*.pyc

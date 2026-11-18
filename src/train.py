@@ -26,6 +26,7 @@ from src.models.two_tower import TwoTowerModel
 from src.utils.config import config_to_dict, load_config
 from src.utils.logging import get_logger
 from src.evaluate import evaluate_model
+from src.evaluate import evaluate_model, evaluate_full_ranking
 
 
 def set_seed(seed: int):
@@ -34,7 +35,8 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
 
 
-def train_one_epoch(model, dataloader, optimizer, temperature, device, logger, epoch, with_features=False):
+def train_one_epoch(model, dataloader, optimizer, temperature, device, logger, epoch,
+                    with_features=False, log_q=None, id_dropout=0.0, unk_idx=0):    
     model.train()
     total_loss, num_batches = 0.0, 0
 
@@ -45,13 +47,18 @@ def train_one_epoch(model, dataloader, optimizer, temperature, device, logger, e
             item_idx  = item_idx.to(device)
             user_feats = user_feats.to(device)
             item_feats = item_feats.to(device)
-            user_emb, item_emb = model(user_idx, item_idx, user_feats, item_feats)
+            if id_dropout > 0:
+                drop = torch.rand(user_idx.shape, device=device) < id_dropout
+                user_in = torch.where(drop, torch.full_like(user_idx, unk_idx), user_idx)
+            else:
+                user_in = user_idx
+            user_emb, item_emb = model(user_in, item_idx, user_feats, item_feats)
         else:
             user_idx, item_idx = batch
             user_idx, item_idx = user_idx.to(device), item_idx.to(device)
             user_emb, item_emb = model(user_idx, item_idx)
 
-        loss = in_batch_contrastive_loss(user_emb, item_emb, temperature)
+        loss = in_batch_contrastive_loss(user_emb, item_emb, temperature,log_q=log_q[item_idx] if log_q is not None else None)
 
         optimizer.zero_grad()
         loss.backward()
@@ -64,9 +71,20 @@ def train_one_epoch(model, dataloader, optimizer, temperature, device, logger, e
     logger.info(f"Epoch {epoch} | train_loss={avg_loss:.4f}")
     return avg_loss
 
+@torch.no_grad()
+def val_full_ndcg(model, val_df, train_df, num_items, uf, itf, wf, k):
+    model.eval()
+    ie = model.all_item_embeddings(torch.arange(num_items), itf if wf else None)
+    def fn(u):
+        return model.user_embedding_for(u, uf[u] if wf else None) @ ie.T
+    return evaluate_full_ranking(fn, val_df, [train_df], num_items, k=k)["NDCG@10"]
 
-def main(config_path: str, with_features: bool = False):
+
+def main(config_path: str, with_features: bool = False, logq: bool = False,
+         cold: int = 0, id_dropout: float = 0.0,seed: int = None):    
     cfg = load_config(config_path)
+    if seed is not None:
+        cfg.train.seed = seed
     set_seed(cfg.train.seed)
     device = cfg.train.device if torch.cuda.is_available() or cfg.train.device == "cpu" else "cpu"
 
@@ -84,6 +102,23 @@ def main(config_path: str, with_features: bool = False):
     test_df      = pd.read_csv(os.path.join(cfg.data.processed_dir, cfg.data.test_file))
     full_history = pd.concat([train_df, val_df, test_df], ignore_index=True)
 
+    os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
+    os.makedirs(cfg.train.results_dir,    exist_ok=True)
+
+    cold_users = []
+    if cold > 0:
+        rng = random.Random(42)
+        cold_users = sorted(rng.sample(sorted(test_df["user_idx"].unique().tolist()), cold))
+        json.dump(cold_users, open(os.path.join(cfg.train.results_dir, "cold_users.json"), "w"))
+        train_df = train_df[~train_df["user_idx"].isin(cold_users)].reset_index(drop=True)
+        val_df = val_df[~val_df["user_idx"].isin(cold_users)].reset_index(drop=True)
+        logger.info(f"Held out {len(cold_users)} cold users; train rows now {len(train_df)}")
+
+    log_q = None
+    if logq:
+        c = train_df["item_idx"].value_counts().reindex(range(num_items), fill_value=0).values.astype("float64") + 1.0
+        log_q = torch.tensor(np.log(c / c.sum()), dtype=torch.float32, device=device)
+
     # --- load feature tensors if requested ---
     user_features, item_features = None, None
     if with_features:
@@ -95,11 +130,10 @@ def main(config_path: str, with_features: bool = False):
 
     train_loader   = get_dataloader(train_df, cfg.train.batch_size, shuffle=True,
                                     user_features=user_features, item_features=item_features)
-    val_candidates = build_eval_candidates(val_df, full_history, num_items, cfg.data.num_eval_negatives)
 
     # --- model / optimizer ---
     model = TwoTowerModel(
-        num_users=num_users,
+        num_users=num_users + 1,
         num_items=num_items,
         embedding_dim=cfg.model.embedding_dim,
         hidden_dims=cfg.model.hidden_dims,
@@ -116,32 +150,31 @@ def main(config_path: str, with_features: bool = False):
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
     os.makedirs(cfg.train.results_dir,    exist_ok=True)
 
-    suffix    = "_with_features" if with_features else ""
+    suffix = ("_with_features" if with_features else "") + ("_logq" if logq else "") + "_fv" + ("_cold" if cold else "") + (f"_s{seed}" if seed is not None else "")
     best_path = os.path.join(cfg.train.checkpoint_dir, f"best_model{suffix}.pt")
     best_ndcg = -1.0
     ndcg_key  = f"NDCG@{cfg.train.top_k}"
 
     history = []
+    bad = 0
     for epoch in range(1, cfg.train.epochs + 1):
-        train_loss = train_one_epoch(
-            model, train_loader, optimizer,
-            cfg.train.temperature, device, logger, epoch,
-            with_features=with_features,
-        )
-
-        record = {"epoch": epoch, "train_loss": train_loss}
-
-        if val_candidates and epoch % cfg.train.eval_every == 0:
-            val_metrics = evaluate_model(model, val_candidates, k=cfg.train.top_k, device=device)
-            logger.info(f"Epoch {epoch} | val={val_metrics}")
-            record.update(val_metrics)
-
-            if val_metrics[ndcg_key] > best_ndcg:
-                best_ndcg = val_metrics[ndcg_key]
-                torch.save(model.state_dict(), best_path)
-                logger.info(f"New best model saved ({ndcg_key}={best_ndcg:.4f}) -> {best_path}")
-
-        history.append(record)
+        train_loss = train_one_epoch(model, train_loader, optimizer, cfg.train.temperature,
+                        device, logger, epoch, with_features=with_features, log_q=log_q,
+                        id_dropout=id_dropout, unk_idx=num_users)
+        
+        v = val_full_ndcg(model, val_df, train_df, num_items, user_features, item_features,
+                      with_features, cfg.train.top_k)
+        logger.info(f"Epoch {epoch} | val_full_ndcg={v:.4f}")
+        history.append({"epoch": epoch, "train_loss": train_loss, "val_full_ndcg": v})
+        if v > best_ndcg:
+            best_ndcg, bad = v, 0
+            torch.save(model.state_dict(), best_path)
+            logger.info(f"New best ({v:.4f}) -> {best_path}")
+        else:
+            bad += 1
+            if bad >= 5:
+                logger.info("Early stopping")
+                break
 
     if not os.path.exists(best_path):
         torch.save(model.state_dict(), best_path)
@@ -152,6 +185,12 @@ def main(config_path: str, with_features: bool = False):
     model.load_state_dict(torch.load(best_path, map_location=device))
     test_candidates = build_eval_candidates(test_df, full_history, num_items, cfg.data.num_eval_negatives)
     test_metrics    = evaluate_model(model, test_candidates, k=cfg.train.top_k, device=device)
+    model.eval()
+    ie = model.all_item_embeddings(torch.arange(num_items), item_features if with_features else None)
+    fn = lambda u: model.user_embedding_for(u, user_features[u] if with_features else None) @ ie.T
+    full = evaluate_full_ranking(fn, test_df, [train_df, val_df], num_items, k=cfg.train.top_k)
+    full.pop("per_user_ndcg")
+    test_metrics["full_catalog"] = full
     logger.info(f"[test] {test_metrics}")
 
     out_name = f"metrics_two_tower{suffix}.json"
@@ -170,8 +209,11 @@ def main(config_path: str, with_features: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the two-tower recommender")
     parser.add_argument("--config", type=str, default="configs/train_config.yaml")
-    parser.add_argument("--with_features", action="store_true",
-                        help="Include user demographics + item genre features in both towers")
+    parser.add_argument("--with_features", action="store_true")
+    parser.add_argument("--logq", action="store_true")
+    parser.add_argument("--cold", type=int, default=0)
+    parser.add_argument("--id_dropout", type=float, default=0.0)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
-
-    main(args.config, with_features=args.with_features)
+    main(args.config, with_features=args.with_features, logq=args.logq,
+     cold=args.cold, id_dropout=args.id_dropout, seed=args.seed)

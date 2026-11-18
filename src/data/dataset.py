@@ -75,13 +75,21 @@ def build_eval_candidates(
     num_items: int,
     num_negatives: int = 99,
     seed: int = 42,
+    negative_mode: str = "uniform",
 ) -> List[Tuple[int, int, List[int]]]:
     """
     full_history_df should be the UNION of train+val+test interactions, so
     sampled negatives are guaranteed to be items the user never touched at
     any point (avoids leaking a "negative" that's secretly a future positive).
     """
-    sampler = NegativeSampler(full_history_df, num_items=num_items, hard_ratio=0.5, seed=seed)
+    if negative_mode == "uniform":
+        hard_ratio = 0.0
+    elif negative_mode == "popularity_mix":
+        hard_ratio = 0.5
+    else:
+        raise ValueError(f"Unknown negative_mode '{negative_mode}'")
+    
+    sampler = NegativeSampler(full_history_df, num_items=num_items, hard_ratio=hard_ratio, seed=seed)
 
     candidates = []
     for row in eval_df.itertuples(index=False):

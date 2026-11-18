@@ -18,7 +18,8 @@ import os
 from typing import List, Tuple
 
 import torch
-
+import numpy as np
+import pandas as pd
 from src.models.two_tower import TwoTowerModel
 from src.utils.config import load_config
 from src.utils.logging import get_logger
@@ -42,36 +43,60 @@ def average_precision(ranked_items: List[int], true_item: int) -> float:
     rank = ranked_items.index(true_item) + 1
     return 1.0 / rank
 
-
 @torch.no_grad()
-def evaluate_model(
-    model: TwoTowerModel,
-    eval_candidates: List[Tuple[int, int, List[int]]],
-    k: int = 10,
-    device: str = "cpu",
-) -> dict:
+def evaluate_model(model, eval_candidates, k=10, device="cpu"):
     model.eval()
     recalls, ndcgs, aps = [], [], []
-
     for user_idx, true_item, negatives in eval_candidates:
         candidate_items = [true_item] + list(negatives)
         item_tensor = torch.tensor(candidate_items, dtype=torch.long, device=device)
         user_tensor = torch.full((len(candidate_items),), user_idx, dtype=torch.long, device=device)
-
-        scores = model.score(user_tensor, item_tensor)  # (num_candidates,)
+        scores = model.score(user_tensor, item_tensor)
         ranked_idx = torch.argsort(scores, descending=True).tolist()
         ranked_items = [candidate_items[i] for i in ranked_idx]
-
         recalls.append(recall_at_k(ranked_items, true_item, k))
         ndcgs.append(ndcg_at_k(ranked_items, true_item, k))
         aps.append(average_precision(ranked_items, true_item))
-
     return {
         f"Recall@{k}": sum(recalls) / len(recalls) if recalls else 0.0,
         f"NDCG@{k}": sum(ndcgs) / len(ndcgs) if ndcgs else 0.0,
         "MAP": sum(aps) / len(aps) if aps else 0.0,
         "num_eval_users": len(eval_candidates),
     }
+
+
+@torch.no_grad()
+def evaluate_full_ranking(score_fn, eval_df, mask_dfs, num_items, k=10, batch_size=512):
+    """
+    score_fn(user_idx_tensor) -> (B, num_items) scores.
+    Masks every item in mask_dfs for that user (train, plus val when evaluating test).
+    Ranks the held-out item against ALL remaining items. Per-user averages.
+    """
+    seen = pd.concat(mask_dfs).groupby("user_idx")["item_idx"].apply(list).to_dict()
+    users = eval_df["user_idx"].values
+    true = eval_df["item_idx"].values
+    recalls, ndcgs, aps = [], [], []
+
+    for s in range(0, len(users), batch_size):
+        u = torch.tensor(users[s:s + batch_size], dtype=torch.long)
+        t = torch.tensor(true[s:s + batch_size], dtype=torch.long)
+        scores = score_fn(u).clone()
+        for row, uid in enumerate(u.tolist()):
+            ids = seen.get(uid)
+            if ids:
+                scores[row, ids] = float("-inf")
+        true_scores = scores[torch.arange(len(u)), t]
+        rank = (scores > true_scores[:, None]).sum(1) + 1   # 1-indexed
+        hit = rank <= k
+        recalls += hit.float().tolist()
+        ndcgs += torch.where(hit, 1.0 / torch.log2(rank.float() + 1), torch.zeros(len(u))).tolist()
+        aps += (1.0 / rank.float()).tolist()
+
+    return {f"Recall@{k}": float(np.mean(recalls)),
+            f"NDCG@{k}": float(np.mean(ndcgs)),
+            "MAP": float(np.mean(aps)),
+            "num_eval_users": len(users),
+            "per_user_ndcg": ndcgs}
 
 
 def main():

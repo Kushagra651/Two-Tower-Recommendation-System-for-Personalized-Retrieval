@@ -36,14 +36,12 @@ def load_retrieval_config(path: str) -> dict:
 
 
 @torch.no_grad()
-def export_item_embeddings(model: TwoTowerModel, num_items: int, batch_size: int = 512) -> np.ndarray:
+def export_item_embeddings(model, num_items, item_feats, batch_size=512):
     model.eval()
     chunks = []
     for start in range(0, num_items, batch_size):
-        end = min(start + batch_size, num_items)
-        idx = torch.arange(start, end, dtype=torch.long)
-        emb = model.all_item_embeddings(idx)
-        chunks.append(emb.cpu().numpy())
+        idx = torch.arange(start, min(start + batch_size, num_items), dtype=torch.long)
+        chunks.append(model.all_item_embeddings(idx, item_feats[idx]).cpu().numpy())
     return np.concatenate(chunks, axis=0).astype("float32")
 
 
@@ -78,10 +76,13 @@ def main(config_path: str, retrieval_config_path: str, checkpoint_path: str, out
         id_maps = json.load(f)
     num_users, num_items = id_maps["num_users"], id_maps["num_items"]
 
-    model = TwoTowerModel(num_users, num_items, cfg.model.embedding_dim, cfg.model.hidden_dims, cfg.model.dropout)
+    from src.data.features import load_item_features
+    itf = load_item_features("data/raw/movies.dat", id_maps_path)
+
+    model = TwoTowerModel(num_users+1, num_items, cfg.model.embedding_dim, cfg.model.hidden_dims, cfg.model.dropout,with_features=True)
     model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
 
-    item_embeddings = export_item_embeddings(model, num_items)
+    item_embeddings = export_item_embeddings(model, num_items,itf)
     print(f"Exported item embeddings: {item_embeddings.shape}")
 
     index = build_faiss_index(item_embeddings, rcfg["index_type"], rcfg.get("nlist", 100))
@@ -105,7 +106,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build FAISS index from trained item tower")
     parser.add_argument("--config", type=str, default="configs/train_config.yaml")
     parser.add_argument("--retrieval_config", type=str, default="configs/retrieval_config.yaml")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model.pt")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model_with_features_logq_fv_cold.pt")
     parser.add_argument("--out_dir", type=str, default="embeddings")
     args = parser.parse_args()
 
